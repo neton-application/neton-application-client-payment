@@ -1,0 +1,29 @@
+{
+  "name": "@neton/application-client-payment",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./manifest": "./src/manifest.ts",
+    "./pages/*": "./src/pages/*.tsx"
+  },
+  "peerDependencies": {
+    "@neton/application-client-contract": "^1.0.0",
+    "@neton/application-client-kit": "^1.0.0",
+    "@neton/application-client-runtime": "^1.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@neton/application-client-contract": "file:../NewGate/newgate-client/packages/client-contract",
+    "@neton/application-client-kit": "file:../NewGate/newgate-client/packages/client-kit",
+    "@neton/application-client-runtime": "file:../NewGate/newgate-client/packages/client-runtime",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.7.0"
+  },
+  "scripts": { "typecheck": "tsc --noEmit" }
+}

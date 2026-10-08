@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { apiFetch, apiWrite } from "@neton/application-client-runtime/client";
+import { useQuery, useQueryClient } from "@neton/application-client-runtime/client-context";
 import { formatDateTime } from "@neton/application-client-runtime/types";
 import {
   Alert, Button, Card, CardContent, CardHeader, CardTitle,
@@ -82,20 +83,15 @@ function channelLabel(c: PayChannel): string {
  * 措辞标明是测试环境。
  */
 export default function Page() {
-  const [balance, setBalance] = React.useState<Balance | null>(null);
-  const [rows, setRows] = React.useState<QuotaTransaction[]>([]);
-  const [total, setTotal] = React.useState(0);
   const [page, setPage] = React.useState(1);
   const [amount, setAmount] = React.useState("");
   const [code, setCode] = React.useState("");
   const [redeemed, setRedeemed] = React.useState<RedeemResult | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const size = 20;
 
   // ── 真实充值 ──
-  const [channels, setChannels] = React.useState<PayChannel[] | null>(null);
   const [channelCode, setChannelCode] = React.useState("");
   const [yuan, setYuan] = React.useState("");
   const [ordering, setOrdering] = React.useState(false);
@@ -103,26 +99,31 @@ export default function Page() {
   const [payState, setPayState] = React.useState<"idle" | "waiting" | "paid" | "closed" | "timeout">("idle");
   const [paidStatus, setPaidStatus] = React.useState<RechargeStatus | null>(null);
 
-  const load = React.useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const [b, p] = await Promise.all([
-        apiFetch<Balance>("/app/gateway/usage/balance"),
-        apiFetch<PageResp<QuotaTransaction>>(`/app/gateway/usage/transaction/page?pageNo=${page}&pageSize=${size}`),
-      ]);
-      setBalance(b); setRows(p.list); setTotal(p.total);
-    } catch (cause) { setError((cause as Error).message); } finally { setLoading(false); }
-  }, [page]);
-
-  React.useEffect(() => { void load(); }, [load]);
+  // useQuery 而不是 effect 里取数：工作区切回页签会重挂 effect，那样每次切换都整页重拉、表格先清空。
+  // 余额与「用量」页共用同一个 key，在这里充值/兑换后那边也跟着失效。
+  const client = useQueryClient();
+  const balanceQ = useQuery({ queryKey: ["gateway-balance"], queryFn: () => apiFetch<Balance>("/app/gateway/usage/balance") });
+  const txQ = useQuery({
+    queryKey: ["gateway-transactions", page],
+    queryFn: () => apiFetch<PageResp<QuotaTransaction>>(`/app/gateway/usage/transaction/page?pageNo=${page}&pageSize=${size}`),
+    placeholderData: (prev) => prev,
+  });
+  // 渠道拉不到按「没有可用渠道」处理，不挡流水与兑换
+  const channelsQ = useQuery({ queryKey: ["pay-channels"], queryFn: () => apiFetch<PayChannel[]>("/app/pay/channel/list").catch(() => [] as PayChannel[]) });
+  const balance = balanceQ.data ?? null;
+  const rows = txQ.data?.list ?? [];
+  const total = txQ.data?.total ?? 0;
+  const loading = balanceQ.isLoading || txQ.isLoading;
+  const channels = channelsQ.data ?? null;
+  const loadError = balanceQ.error ?? txQ.error;
+  const load = React.useCallback(() => {
+    void client.invalidateQueries({ queryKey: ["gateway-balance"] });
+    void client.invalidateQueries({ queryKey: ["gateway-transactions"] });
+  }, [client]);
 
   React.useEffect(() => {
-    let alive = true;
-    apiFetch<PayChannel[]>("/app/pay/channel/list")
-      .then((list) => { if (!alive) return; setChannels(list); if (list.length > 0) setChannelCode((c) => c || list[0].code); })
-      .catch(() => { if (alive) setChannels([]); });
-    return () => { alive = false; };
-  }, []);
+    if (channels && channels.length > 0) setChannelCode((c) => c || channels[0].code);
+  }, [channels]);
 
   /**
    * 付款结果轮询。每 2 秒查一次，最多 10 分钟：支付宝/微信的二维码本身也差不多这个有效期。
@@ -201,7 +202,7 @@ export default function Page() {
       <PageHeader eyebrow="BILLING" title="充值与流水" description="账户额度的充值、兑换记录与消费明细。" />
       {/* role="alert" 留给下面这条请求失败：无障碍语义里它是「需要立即注意」的通告，屏幕阅读器会
           打断用户。欠费说明是状态而非事故，用 Alert 组件（无 role）呈现，不该打断正在读流水的人。 */}
-      {error ? <p role="alert">{error}</p> : null}
+      {error ?? loadError ? <p role="alert">{error ?? (loadError as Error).message}</p> : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12 }}>
         <Card>

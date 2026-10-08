@@ -197,13 +197,13 @@ export default function Page() {
   const muted: React.CSSProperties = { margin: "6px 0 0", fontSize: 12, color: "var(--muted-foreground)" };
 
   return (
-    <div>
+    <div className="flex flex-col gap-4">
       <PageHeader eyebrow="BILLING" title="充值与流水" description="账户额度的充值、兑换记录与消费明细。" />
       {/* role="alert" 留给下面这条请求失败：无障碍语义里它是「需要立即注意」的通告，屏幕阅读器会
           打断用户。欠费说明是状态而非事故，用 Alert 组件（无 role）呈现，不该打断正在读流水的人。 */}
       {error ? <p role="alert">{error}</p> : null}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12, margin: "12px 0" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12 }}>
         <Card>
           <CardHeader><CardTitle>可用余额</CardTitle></CardHeader>
           <CardContent>{balance ? usd(balance.available) : "—"}</CardContent>
@@ -228,7 +228,7 @@ export default function Page() {
         </Alert>
       ) : null}
 
-      <Card style={{ margin: "12px 0" }}>
+      <Card>
         <CardHeader><CardTitle>在线充值</CardTitle></CardHeader>
         <CardContent>
           {channels === null ? (
@@ -311,7 +311,7 @@ export default function Page() {
         </CardContent>
       </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12, margin: "12px 0" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
         <Card>
           <CardHeader><CardTitle>兑换码</CardTitle></CardHeader>
           <CardContent>

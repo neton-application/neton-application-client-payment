@@ -19,11 +19,13 @@
     "@neton/application-client-contract": "file:../NewGate/newgate-client/packages/client-contract",
     "@neton/application-client-kit": "file:../NewGate/newgate-client/packages/client-kit",
     "@neton/application-client-runtime": "file:../NewGate/newgate-client/packages/client-runtime",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "typescript": "^5.7.0"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
   },
-  "scripts": { "typecheck": "tsc --noEmit" }
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
 }

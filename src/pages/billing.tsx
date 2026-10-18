@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { apiFetch, apiWrite } from "@neton/application-client-runtime/client";
+import { useDescribeError } from "@neton/application-client-runtime/errors";
 import { useQuery, useQueryClient } from "@neton/application-client-runtime/client-context";
 import { formatDateTime } from "@neton/application-client-runtime/types";
 import {
@@ -83,6 +84,7 @@ function channelLabel(c: PayChannel): string {
  * 措辞标明是测试环境。
  */
 export default function Page() {
+  const describeError = useDescribeError("payment");
   const [page, setPage] = React.useState(1);
   const [amount, setAmount] = React.useState("");
   const [code, setCode] = React.useState("");
@@ -158,7 +160,7 @@ export default function Page() {
       setOrder(o); setPayState("waiting");
       // 跳转类渠道开新窗口付款，本页留着轮询结果；弹窗被拦时下面仍有手动链接兜底。
       if (o.displayMode === "REDIRECT_URL" && o.payload) window.open(o.payload, "_blank", "noopener");
-    } catch (cause) { setError((cause as Error).message); } finally { setOrdering(false); }
+    } catch (cause) { setError(describeError(cause)); } finally { setOrdering(false); }
   }
 
   async function recharge() {
@@ -166,7 +168,7 @@ export default function Page() {
     try {
       await apiWrite("/app/gateway/recharge/mock", "POST", { amount: Number(amount) });
       setAmount(""); void load();
-    } catch (cause) { setError((cause as Error).message); }
+    } catch (cause) { setError(describeError(cause)); }
   }
 
   /**
@@ -174,7 +176,7 @@ export default function Page() {
    * 双击发出的第二发会在后端拿到 409「兑换码已被使用」—— 用户明明只点了一次，
    * 却被告知码被别人用了，那看起来像码被偷了。挡在前端比解释在后端便宜。
    *
-   * 失败原因由后端直接给人话（兑换码无效 / 已被使用 / 已作废 / 已过期），原样透传即可。
+   * 失败原因是后端的机器码（REDEMPTION_CODE_NOT_FOUND / _USED / _DISABLED / _EXPIRED），按语言包翻译。
    * 后端**刻意不在失败响应里带面额**（否则枚举命中的收益会从「知道这个码存在」升级成
    * 「知道它值多少钱」），所以这里也别试图在错误提示里补出金额。
    */
@@ -183,7 +185,7 @@ export default function Page() {
     try {
       const r = await apiWrite<RedeemResult>("/app/gateway/redeem", "POST", { code });
       setRedeemed(r); setCode(""); void load();
-    } catch (cause) { setError((cause as Error).message); } finally { setBusy(false); }
+    } catch (cause) { setError(describeError(cause)); } finally { setBusy(false); }
   }
 
   const columns: DataColumn<QuotaTransaction>[] = [
@@ -202,7 +204,7 @@ export default function Page() {
       <PageHeader eyebrow="BILLING" title="充值与流水" description="账户额度的充值、兑换记录与消费明细。" />
       {/* role="alert" 留给下面这条请求失败：无障碍语义里它是「需要立即注意」的通告，屏幕阅读器会
           打断用户。欠费说明是状态而非事故，用 Alert 组件（无 role）呈现，不该打断正在读流水的人。 */}
-      {error ?? loadError ? <p role="alert">{error ?? (loadError as Error).message}</p> : null}
+      {error ?? loadError ? <p role="alert">{error ?? describeError(loadError)}</p> : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12 }}>
         <Card>

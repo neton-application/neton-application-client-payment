@@ -113,6 +113,7 @@ const messages: Record<string, string> = {
   "error.PAY_ORDER_NOT_FOUND": "Order not found",
   "error.PAY_ORDER_NOT_PAID": "The order was not paid successfully and cannot be refunded",
   "error.MOCK_PAY_DISABLED": "Mock payment is disabled",
+  "error.PAY_ENDPOINT_FORBIDDEN": "The payment channel's gateway address is not public and the deployment's egress policy does not allow it, or it could not be resolved",
   // gateway（充值 / 兑换 / 余额）
   "error.CHANNEL_NOT_FOUND": "Channel not found",
   "error.CHANNEL_TYPE_UNKNOWN": "Unknown channel type",

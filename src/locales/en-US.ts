@@ -95,6 +95,8 @@ const messages: Record<string, string> = {
   "error.QUOTA_REVOKE_REF_REQUIRED": "Revoke requires a ref as idempotency key (e.g. revoke:<ticket>)",
   "error.RECHARGE_INVALID": "Invalid recharge request",
   "error.RECHARGE_PRICE_INVALID": "Recharge price must be positive",
+  "error.RECHARGE_PRICE_TOO_LOW": "The amount is below the minimum for a single top-up",
+  "error.RECHARGE_PRICE_TOO_HIGH": "The amount exceeds the maximum for a single top-up; split it into smaller payments",
   "error.RECHARGE_CHANNEL_REQUIRED": "A payment channel is required",
   "error.RECHARGE_NOT_FOUND": "Recharge order not found",
   "error.MOCK_RECHARGE_DISABLED": "Mock recharge is disabled (set NEWGATE_ENABLE_MOCK_RECHARGE=true in a test environment)",

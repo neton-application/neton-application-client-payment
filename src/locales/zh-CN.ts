@@ -95,6 +95,8 @@ const messages: Record<string, string> = {
   "error.QUOTA_REVOKE_REF_REQUIRED": "撤回必须填写凭据 ref 作为幂等键（建议 revoke:<工单号>）",
   "error.RECHARGE_INVALID": "充值参数有误",
   "error.RECHARGE_PRICE_INVALID": "充值金额必须是正数",
+  "error.RECHARGE_PRICE_TOO_LOW": "充值金额低于单笔最低限额",
+  "error.RECHARGE_PRICE_TOO_HIGH": "充值金额超过单笔上限，请分笔充值",
   "error.RECHARGE_CHANNEL_REQUIRED": "请选择支付渠道",
   "error.RECHARGE_NOT_FOUND": "充值单不存在",
   "error.MOCK_RECHARGE_DISABLED": "模拟充值未开启（测试环境设 NEWGATE_ENABLE_MOCK_RECHARGE=true）",

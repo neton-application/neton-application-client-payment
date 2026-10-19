@@ -51,6 +51,7 @@ const TX_LABEL: Record<string, string> = {
   invite: "邀请奖励",
   consume: "消费",
   revoke: "平台撤回",
+  refund: "充值退款",
 };
 
 const METHOD_LABEL: Record<string, string> = {

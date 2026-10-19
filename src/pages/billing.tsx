@@ -3,6 +3,7 @@
 import * as React from "react";
 import { apiFetch, apiWrite } from "@neton/application-client-runtime/client";
 import { useDescribeError } from "@neton/application-client-runtime/errors";
+import { useT, type Translate } from "@neton/application-client-runtime/i18n";
 import { useQuery, useQueryClient } from "@neton/application-client-runtime/client-context";
 import { formatDateTime } from "@neton/application-client-runtime/types";
 import {
@@ -44,19 +45,16 @@ const PAY_WAITING = 0, PAY_PAID = 1, PAY_CLOSED = 2;
  * 下面那个模拟充值入口，而真实付款入账走的是 `recharge`。原先一律标「充值」，于是运营手工
  * 补的一笔钱在用户眼里成了「我充值过」—— 对账时两边说的根本不是同一件事。
  */
-const TX_LABEL: Record<string, string> = {
-  grant: "发放",
-  recharge: "充值",
-  redeem: "兑换码",
-  invite: "邀请奖励",
-  consume: "消费",
-  revoke: "平台撤回",
-  refund: "充值退款",
+const TX_TYPES = new Set(["grant", "recharge", "redeem", "invite", "consume", "revoke", "refund"]);
+
+/** 支付方式 → 词条 billing.method.<key>；wxpay 与 wechat 同义。 */
+const METHOD_KEY: Record<string, string> = {
+  alipay: "alipay", wechat: "wechat", wxpay: "wechat", stripe: "stripe", sandbox: "sandbox",
 };
 
-const METHOD_LABEL: Record<string, string> = {
-  alipay: "支付宝", wechat: "微信支付", wxpay: "微信支付", stripe: "Stripe", sandbox: "沙箱",
-};
+function txLabel(type: string, t: Translate): string {
+  return TX_TYPES.has(type) ? t(`billing.tx.${type}`) : type;
+}
 
 /** 额度 μUSD（1e-6 USD）转成美元展示，避免用户对着 7 位整数猜。 */
 function usd(micro: number): string {
@@ -68,9 +66,10 @@ function fiat(minor: number): string {
   return `¥${(minor / 100).toFixed(2)}`;
 }
 
-function channelLabel(c: PayChannel): string {
-  const m = METHOD_LABEL[c.method.toLowerCase()] ?? c.method;
-  return c.remark ? `${m}（${c.remark}）` : m;
+function channelLabel(c: PayChannel, t: Translate): string {
+  const key = METHOD_KEY[c.method.toLowerCase()];
+  const m = key ? t(`billing.method.${key}`) : c.method;
+  return c.remark ? t("billing.channel_with_remark", { method: m, remark: c.remark }) : m;
 }
 
 /**
@@ -86,6 +85,7 @@ function channelLabel(c: PayChannel): string {
  */
 export default function Page() {
   const describeError = useDescribeError("payment");
+  const t = useT("payment");
   const [page, setPage] = React.useState(1);
   const [amount, setAmount] = React.useState("");
   const [code, setCode] = React.useState("");
@@ -153,8 +153,8 @@ export default function Page() {
   async function createOrder() {
     setError(null); setOrder(null); setPaidStatus(null);
     const price = Math.round(Number(yuan) * 100);
-    if (!Number.isFinite(price) || price <= 0) { setError("请输入大于 0 的金额（元）"); return; }
-    if (!channelCode) { setError("请选择支付方式"); return; }
+    if (!Number.isFinite(price) || price <= 0) { setError(t("billing.err.amount_invalid")); return; }
+    if (!channelCode) { setError(t("billing.err.channel_required")); return; }
     setOrdering(true);
     try {
       const o = await apiWrite<RechargeOrder>("/app/gateway/recharge", "POST", { price, channelCode });
@@ -190,11 +190,11 @@ export default function Page() {
   }
 
   const columns: DataColumn<QuotaTransaction>[] = [
-    { key: "type", header: "类型", cell: (r) => TX_LABEL[r.type] ?? r.type },
-    { key: "amount", header: "变动", cell: (r) => usd(r.amount) },
-    { key: "balanceAfter", header: "变动后余额", cell: (r) => usd(r.balanceAfter) },
-    { key: "ref", header: "凭据", cell: (r) => r.ref ?? "—" },
-    { key: "createdAt", header: "时间", cell: (r) => formatDateTime(r.createdAt) },
+    { key: "type", header: t("billing.col.type"), cell: (r) => txLabel(r.type, t) },
+    { key: "amount", header: t("billing.col.amount"), cell: (r) => usd(r.amount) },
+    { key: "balanceAfter", header: t("billing.col.balance_after"), cell: (r) => usd(r.balanceAfter) },
+    { key: "ref", header: t("billing.col.ref"), cell: (r) => r.ref ?? "—" },
+    { key: "createdAt", header: t("billing.col.time"), cell: (r) => formatDateTime(r.createdAt) },
   ];
 
   const negative = balance !== null && balance.available < 0;
@@ -202,73 +202,70 @@ export default function Page() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader eyebrow="BILLING" title="充值与流水" description="账户额度的充值、兑换记录与消费明细。" />
+      <PageHeader eyebrow="BILLING" title={t("billing.title")} description={t("billing.description")} />
       {/* role="alert" 留给下面这条请求失败：无障碍语义里它是「需要立即注意」的通告，屏幕阅读器会
           打断用户。欠费说明是状态而非事故，用 Alert 组件（无 role）呈现，不该打断正在读流水的人。 */}
       {error ?? loadError ? <p role="alert">{error ?? describeError(loadError)}</p> : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 12 }}>
         <Card>
-          <CardHeader><CardTitle>可用余额</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{t("billing.available")}</CardTitle></CardHeader>
           <CardContent>{balance ? usd(balance.available) : "—"}</CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>账面余额</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{t("billing.balance")}</CardTitle></CardHeader>
           <CardContent>{balance ? usd(balance.balance) : "—"}</CardContent>
         </Card>
         <Card>
           {/* 预留是进行中请求的资金占位，请求结束后按实际用量结算并退还差额 */}
-          <CardHeader><CardTitle>进行中占用</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{t("billing.reserved")}</CardTitle></CardHeader>
           <CardContent>{balance ? usd(balance.reserved) : "—"}</CardContent>
         </Card>
       </div>
 
       {negative ? (
         <Alert tone="warning" style={{ marginBottom: 12 }}>
-          可用余额为负（{balance ? usd(balance.available) : "—"}）。这不是显示错误：账户已经欠费，
-          新的 API 请求会被网关直接拒掉（402 insufficient_quota）。成因看下面的流水 ——
-          标着「平台撤回」的行是运营收回了此前发放的额度，标着「消费」的行是按实际用量结算扣的费。
-          兑换码或充值入账会先填平这个缺口，超出部分才可用；已经发出的请求不受影响。
+          {t("billing.negative_notice", { amount: balance ? usd(balance.available) : "—", revoke: t("billing.tx.revoke"), consume: t("billing.tx.consume") })}
         </Alert>
       ) : null}
 
       <Card>
-        <CardHeader><CardTitle>在线充值</CardTitle></CardHeader>
+        <CardHeader><CardTitle>{t("billing.online.title")}</CardTitle></CardHeader>
         <CardContent>
           {channels === null ? (
-            <p style={muted}>正在读取支付方式…</p>
+            <p style={muted}>{t("billing.online.loading")}</p>
           ) : channels.length === 0 ? (
-            <p style={muted}>平台暂未开通在线支付，请使用兑换码，或联系管理员。</p>
+            <p style={muted}>{t("billing.online.unavailable")}</p>
           ) : (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
-                <Field label="支付方式">
+                <Field label={t("billing.online.channel")}>
                   <select
                     value={channelCode}
                     onChange={(e) => setChannelCode(e.target.value)}
                     disabled={ordering || payState === "waiting"}
                     style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit" }}
                   >
-                    {channels.map((c) => <option key={c.code} value={c.code}>{channelLabel(c)}</option>)}
+                    {channels.map((c) => <option key={c.code} value={c.code}>{channelLabel(c, t)}</option>)}
                   </select>
                 </Field>
-                <Field label="金额（元）">
+                <Field label={t("billing.online.amount")}>
                   <Input
                     value={yuan}
                     onChange={(e) => setYuan(e.target.value)}
-                    placeholder="例如 50"
+                    placeholder={t("billing.online.amount_placeholder")}
                     inputMode="decimal"
                     disabled={ordering || payState === "waiting"}
                   />
                 </Field>
               </div>
-              <p style={muted}>到账额度按平台汇率折算，建单后会显示这笔订单对应的额度；付款成功后自动入账并刷新余额。</p>
+              <p style={muted}>{t("billing.online.hint")}</p>
               <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
                 <Button onClick={() => void createOrder()} disabled={ordering || payState === "waiting" || yuan.trim() === ""}>
-                  {ordering ? "建单中…" : "去支付"}
+                  {ordering ? t("billing.online.ordering") : t("billing.online.pay")}
                 </Button>
                 {payState === "waiting" ? (
-                  <Button variant="secondary" onClick={() => { setPayState("idle"); setOrder(null); }}>取消等待</Button>
+                  <Button variant="secondary" onClick={() => { setPayState("idle"); setOrder(null); }}>{t("billing.online.stop_waiting")}</Button>
                 ) : null}
               </div>
             </>
@@ -277,38 +274,39 @@ export default function Page() {
           {order ? (
             <div style={{ marginTop: 12, padding: 12, borderRadius: 8, border: "1px solid var(--border)" }}>
               <p style={{ margin: 0, fontSize: 13 }}>
-                订单 {order.merchantOrderId}：支付 {fiat(order.price)}，到账 {usd(order.amountMicro)}。
+                {t("billing.order.summary", { id: order.merchantOrderId, price: fiat(order.price), amount: usd(order.amountMicro) })}
               </p>
               {payState === "waiting" ? (
                 <>
                   {order.displayMode === "REDIRECT_URL" ? (
                     <p style={muted}>
-                      已在新窗口打开收银台；如果没有弹出，
-                      <a href={order.payload} target="_blank" rel="noopener noreferrer">点这里前往付款</a>。
-                      付款完成后本页会自动更新。
+                      {t("billing.order.redirect_before")}
+                      <a href={order.payload} target="_blank" rel="noopener noreferrer">{t("billing.order.redirect_link")}</a>
+                      {t("billing.order.redirect_after")}
                     </p>
                   ) : order.displayMode === "QR_CODE" ? (
                     <>
-                      <p style={muted}>请用支付 App 扫描下方二维码内容付款；付款完成后本页会自动更新。</p>
+                      <p style={muted}>{t("billing.order.qr")}</p>
                       <QrBox text={order.payload} />
                     </>
                   ) : (
                     <>
-                      <p style={muted}>该支付方式需在客户端 SDK 中完成，参数如下：</p>
+                      <p style={muted}>{t("billing.order.sdk")}</p>
                       <pre style={{ fontSize: 12, overflowX: "auto", margin: 0 }}>{order.payload}</pre>
                     </>
                   )}
-                  <p style={muted}>等待付款结果中…</p>
+                  <p style={muted}>{t("billing.order.waiting")}</p>
                 </>
               ) : payState === "paid" ? (
                 <p style={{ margin: "6px 0 0", fontSize: 13 }}>
-                  付款成功，已入账 {usd(paidStatus?.amountMicro ?? order.amountMicro)}
-                  {paidStatus?.paidAt ? `（${formatDateTime(paidStatus.paidAt)}）` : ""}。
+                  {paidStatus?.paidAt
+                    ? t("billing.order.paid_at", { amount: usd(paidStatus.amountMicro ?? order.amountMicro), time: formatDateTime(paidStatus.paidAt) })
+                    : t("billing.order.paid", { amount: usd(paidStatus?.amountMicro ?? order.amountMicro) })}
                 </p>
               ) : payState === "closed" ? (
-                <p style={muted}>这笔订单已关闭。如已付款请稍后刷新流水，未到账请联系管理员。</p>
+                <p style={muted}>{t("billing.order.closed")}</p>
               ) : payState === "timeout" ? (
-                <p style={muted}>等待付款超时，已停止查询。如已付款，稍后刷新流水即可看到入账；否则请重新下单。</p>
+                <p style={muted}>{t("billing.order.timeout")}</p>
               ) : null}
             </div>
           ) : null}
@@ -317,42 +315,41 @@ export default function Page() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
         <Card>
-          <CardHeader><CardTitle>兑换码</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{t("billing.redeem.title")}</CardTitle></CardHeader>
           <CardContent>
-            <Field label="兑换码">
+            <Field label={t("billing.redeem.code")}>
               <Input
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                placeholder="例如 7QK4X-9MZ2P-…"
+                placeholder={t("billing.redeem.placeholder")}
                 disabled={busy}
               />
             </Field>
             <p style={muted}>
-              大小写、空格与连字符都不用管，服务端会归一化后比对。一张码只能兑一次，成功后额度立即到账。
+              {t("billing.redeem.hint")}
             </p>
             <div style={{ marginTop: 8 }}>
               <Button onClick={() => void redeem()} disabled={busy || code.trim() === ""}>
-                {busy ? "兑换中…" : "兑换"}
+                {busy ? t("billing.redeem.redeeming") : t("billing.redeem.submit")}
               </Button>
             </div>
             {redeemed ? (
               <p style={{ margin: "8px 0 0", fontSize: 13 }}>
-                已入账 {usd(redeemed.quotaMicro)}，当前余额 {usd(redeemed.balance)}。
+                {t("billing.redeem.done", { amount: usd(redeemed.quotaMicro), balance: usd(redeemed.balance) })}
               </p>
             ) : null}
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>模拟充值（测试环境）</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{t("billing.mock.title")}</CardTitle></CardHeader>
           <CardContent>
-            <Field label="额度 μUSD">
+            <Field label={t("billing.mock.amount")}>
               <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="1000000 = $1" />
             </Field>
             <p style={muted}>
-              需服务端开启 NEWGATE_ENABLE_MOCK_RECHARGE，正式环境不会开放。
-              这条入账在下面的流水里记为「发放」，与真实付款的「充值」分开。
+              {t("billing.mock.hint", { grant: t("billing.tx.grant"), recharge: t("billing.tx.recharge") })}
             </p>
-            <div style={{ marginTop: 8 }}><Button onClick={() => void recharge()}>充值</Button></div>
+            <div style={{ marginTop: 8 }}><Button onClick={() => void recharge()}>{t("billing.mock.submit")}</Button></div>
           </CardContent>
         </Card>
       </div>
@@ -376,11 +373,12 @@ export default function Page() {
  * 实现放在页面里而不是 kit：整个控制台只有这一处要画码。
  */
 function QrBox({ text }: { text: string }) {
+  const t = useT("payment");
   const matrix = React.useMemo(() => qrMatrix(text), [text]);
   if (!matrix) {
     return (
       <p style={{ margin: "6px 0 0", fontSize: 12 }}>
-        二维码内容过长，无法在此渲染，请复制后在支付 App 打开：<code style={{ wordBreak: "break-all" }}>{text}</code>
+        {t("billing.qr.too_long")}<code style={{ wordBreak: "break-all" }}>{text}</code>
       </p>
     );
   }
@@ -389,7 +387,7 @@ function QrBox({ text }: { text: string }) {
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (matrix[y][x]) d += `M${(x + quiet) * cell} ${(y + quiet) * cell}h${cell}v${cell}h-${cell}z`;
   return (
     <div style={{ marginTop: 8 }}>
-      <svg width={sizePx} height={sizePx} viewBox={`0 0 ${sizePx} ${sizePx}`} role="img" aria-label="付款二维码" style={{ background: "#fff", borderRadius: 6 }}>
+      <svg width={sizePx} height={sizePx} viewBox={`0 0 ${sizePx} ${sizePx}`} role="img" aria-label={t("billing.qr.label")} style={{ background: "#fff", borderRadius: 6 }}>
         <path d={d} fill="#000" />
       </svg>
       <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted-foreground)", wordBreak: "break-all" }}>{text}</p>

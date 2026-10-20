@@ -77,10 +77,10 @@ function channelLabel(c: PayChannel, t: Translate): string {
  *
  * 真实付款：选渠道 → 填金额 → POST /app/gateway/recharge 建单 → 按 displayMode 把用户送去付款
  * （跳转 / 二维码 / SDK 参数）→ 轮询 GET /app/gateway/recharge/get/{id} 直到 payStatus 变成已付，
- * 额度由回调入账，界面只负责刷新余额。到账额度按服务端汇率算（NEWGATE_QUOTA_PER_PRICE_UNIT），
+ * 额度由回调入账，界面只负责刷新余额。到账额度按服务端汇率算（NETONAPI_QUOTA_PER_PRICE_UNIT），
  * 界面不承诺具体数字，只在建单后显示后端算出来的 amountMicro。
  *
- * 模拟充值保留给联调（需服务端显式开启 NEWGATE_ENABLE_MOCK_RECHARGE），放在真实入口下面、
+ * 模拟充值保留给联调（需服务端显式开启 NETONAPI_ENABLE_MOCK_RECHARGE），放在真实入口下面、
  * 措辞标明是测试环境。
  */
 export default function Page() {

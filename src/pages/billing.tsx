@@ -21,6 +21,10 @@ interface PageResp<T> { list: T[]; total: number; page: number; size: number; to
 
 /** 后端 /app/pay/channel/list：运营启用的支付渠道，displayMode 决定怎么把用户送去付款。 */
 interface PayChannel { code: string; method: string; displayMode: string; remark?: string | null }
+/** GET /app/gateway/recharge/options：price 单位是分。 */
+interface RechargeOptions { online: boolean; quotaPerPriceUnit?: number | null; minPrice: number; maxPrice: number; mock: boolean }
+const CLOSED_OPTIONS: RechargeOptions = { online: false, quotaPerPriceUnit: null, minPrice: 0, maxPrice: 0, mock: false };
+
 interface RechargeOrder {
   rechargeId: number; merchantOrderId: string; amountMicro: number; price: number;
   orderId: number; displayMode: string; payload: string; channelOrderNo?: string | null;
@@ -80,8 +84,8 @@ function channelLabel(c: PayChannel, t: Translate): string {
  * 额度由回调入账，界面只负责刷新余额。到账额度按服务端汇率算（NETONAPI_QUOTA_PER_PRICE_UNIT），
  * 界面不承诺具体数字，只在建单后显示后端算出来的 amountMicro。
  *
- * 模拟充值保留给联调（需服务端显式开启 NETONAPI_ENABLE_MOCK_RECHARGE），放在真实入口下面、
- * 措辞标明是测试环境。
+ * 在线充值没开通（后端没配汇率）或没有可用支付渠道时，只提示联系客户经理充值，不显示表单。
+ * 模拟充值保留给联调（需服务端显式开启 NETONAPI_ENABLE_MOCK_RECHARGE），只在开着时出现，金额按美元填。
  */
 export default function Page() {
   const describeError = useDescribeError("payment");
@@ -113,6 +117,12 @@ export default function Page() {
   });
   // 渠道拉不到按「没有可用渠道」处理，不挡流水与兑换
   const channelsQ = useQuery({ queryKey: ["pay-channels"], queryFn: () => apiFetch<PayChannel[]>("/app/pay/channel/list").catch(() => [] as PayChannel[]) });
+  // 在线充值是否开通（后端没配汇率 = 没开通）、汇率、模拟充值开关；拉不到按「没开通、没有模拟充值」处理
+  const optionsQ = useQuery({
+    queryKey: ["gateway-recharge-options"],
+    queryFn: () => apiFetch<RechargeOptions>("/app/gateway/recharge/options").catch(() => CLOSED_OPTIONS),
+  });
+  const options = optionsQ.data ?? null;
   const balance = balanceQ.data ?? null;
   const rows = txQ.data?.list ?? [];
   const total = txQ.data?.total ?? 0;
@@ -167,7 +177,9 @@ export default function Page() {
   async function recharge() {
     setError(null);
     try {
-      await apiWrite("/app/gateway/recharge/mock", "POST", { amount: Number(amount) });
+      const micro = Math.round(Number(amount) * 1_000_000);  // 输入的是美元，接口要 μUSD
+      if (!Number.isFinite(micro) || micro <= 0) { setError(t("billing.err.amount_invalid")); return; }
+      await apiWrite("/app/gateway/recharge/mock", "POST", { amount: micro });
       setAmount(""); void load();
     } catch (cause) { setError(describeError(cause)); }
   }
@@ -232,10 +244,10 @@ export default function Page() {
       <Card>
         <CardHeader><CardTitle>{t("billing.online.title")}</CardTitle></CardHeader>
         <CardContent>
-          {channels === null ? (
+          {channels === null || options === null ? (
             <p style={muted}>{t("billing.online.loading")}</p>
-          ) : channels.length === 0 ? (
-            <p style={muted}>{t("billing.online.unavailable")}</p>
+          ) : !options.online || channels.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 14 }}>{t("billing.online.contact")}</p>
           ) : (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
@@ -260,6 +272,11 @@ export default function Page() {
                 </Field>
               </div>
               <p style={muted}>{t("billing.online.hint")}</p>
+              {(() => {
+                const price = Math.round(Number(yuan) * 100);
+                if (!options.quotaPerPriceUnit || !Number.isFinite(price) || price <= 0) return null;
+                return <p style={{ ...muted, color: "var(--foreground)" }}>{t("billing.online.preview", { amount: usd(price * options.quotaPerPriceUnit) })}</p>;
+              })()}
               <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
                 <Button onClick={() => void createOrder()} disabled={ordering || payState === "waiting" || yuan.trim() === ""}>
                   {ordering ? t("billing.online.ordering") : t("billing.online.pay")}
@@ -313,7 +330,8 @@ export default function Page() {
         </CardContent>
       </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
+      {/* 模拟充值只在测试环境（后端开了 NETONAPI_ENABLE_MOCK_RECHARGE）出现；没有它时兑换码占满一行 */}
+      <div style={{ display: "grid", gridTemplateColumns: options?.mock ? "repeat(2, minmax(0,1fr))" : "minmax(0,1fr)", gap: 12 }}>
         <Card>
           <CardHeader><CardTitle>{t("billing.redeem.title")}</CardTitle></CardHeader>
           <CardContent>
@@ -340,18 +358,20 @@ export default function Page() {
             ) : null}
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader><CardTitle>{t("billing.mock.title")}</CardTitle></CardHeader>
-          <CardContent>
-            <Field label={t("billing.mock.amount")}>
-              <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="1000000 = $1" />
-            </Field>
-            <p style={muted}>
-              {t("billing.mock.hint", { grant: t("billing.tx.grant"), recharge: t("billing.tx.recharge") })}
-            </p>
-            <div style={{ marginTop: 8 }}><Button onClick={() => void recharge()}>{t("billing.mock.submit")}</Button></div>
-          </CardContent>
-        </Card>
+        {options?.mock ? (
+          <Card>
+            <CardHeader><CardTitle>{t("billing.mock.title")}</CardTitle></CardHeader>
+            <CardContent>
+              <Field label={t("billing.mock.amount")}>
+                <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={t("billing.mock.placeholder")} inputMode="decimal" />
+              </Field>
+              <p style={muted}>
+                {t("billing.mock.hint", { grant: t("billing.tx.grant"), recharge: t("billing.tx.recharge") })}
+              </p>
+              <div style={{ marginTop: 8 }}><Button onClick={() => void recharge()} disabled={amount.trim() === ""}>{t("billing.mock.submit")}</Button></div>
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
 
       <DataTable columns={columns} rows={rows} loading={loading} rowKey={(r) => r.id} />

@@ -8,7 +8,7 @@ import { useQuery, useQueryClient } from "@neton/application-client-runtime/clie
 import { formatDateTime } from "@neton/application-client-runtime/types";
 import {
   Alert, Button, Card, CardContent, CardHeader, CardTitle,
-  DataTable, Field, Input, PageHeader, Pagination, type DataColumn,
+  DataTable, Field, Input, PageHeader, Pagination, Portal, type DataColumn,
 } from "@neton/application-client-kit";
 
 interface Balance { balance: number; reserved: number; available: number }
@@ -22,8 +22,11 @@ interface PageResp<T> { list: T[]; total: number; page: number; size: number; to
 /** 后端 /app/pay/channel/list：运营启用的支付渠道，displayMode 决定怎么把用户送去付款。 */
 interface PayChannel { code: string; method: string; displayMode: string; remark?: string | null }
 /** GET /app/gateway/recharge/options：price 单位是分。 */
-interface RechargeOptions { online: boolean; quotaPerPriceUnit?: number | null; minPrice: number; maxPrice: number; mock: boolean }
-const CLOSED_OPTIONS: RechargeOptions = { online: false, quotaPerPriceUnit: null, minPrice: 0, maxPrice: 0, mock: false };
+interface RechargeOptions { online: boolean; quotaPerPriceUnit?: number | null; minPrice: number; maxPrice: number }
+const CLOSED_OPTIONS: RechargeOptions = { online: false, quotaPerPriceUnit: null, minPrice: 0, maxPrice: 0 };
+
+/** 快捷金额（元）。超出运营设的单笔上下限的不显示。 */
+const PRESET_YUAN = [10, 50, 100, 500];
 
 interface RechargeOrder {
   rechargeId: number; merchantOrderId: string; amountMicro: number; price: number;
@@ -45,9 +48,8 @@ const PAY_WAITING = 0, PAY_PAID = 1, PAY_CLOSED = 2;
  * 而显示成裸英文串至少是个响的信号。后端预留的 `refund` 至今无产出点，所以这里也不列 ——
  * 哪天真开始写退款台账，界面会先显示 "refund" 提醒有人来补这一行。
  *
- * `grant` 标成「发放」而不是原先的「充值」是一次修正：grant 既包含运营手工补的额度，也包含
- * 下面那个模拟充值入口，而真实付款入账走的是 `recharge`。原先一律标「充值」，于是运营手工
- * 补的一笔钱在用户眼里成了「我充值过」—— 对账时两边说的根本不是同一件事。
+ * `grant` 是运营在管理台手动充值的额度，标「人工充值」；真实付款入账走的是 `recharge`（「在线充值」）。
+ * 两者分开标，对账时用户与运营说的才是同一件事。
  */
 const TX_TYPES = new Set(["grant", "recharge", "redeem", "invite", "consume", "revoke", "refund"]);
 
@@ -79,19 +81,17 @@ function channelLabel(c: PayChannel, t: Translate): string {
 /**
  * 充值、兑换与流水。
  *
- * 真实付款：选渠道 → 填金额 → POST /app/gateway/recharge 建单 → 按 displayMode 把用户送去付款
- * （跳转 / 二维码 / SDK 参数）→ 轮询 GET /app/gateway/recharge/get/{id} 直到 payStatus 变成已付，
- * 额度由回调入账，界面只负责刷新余额。到账额度按服务端汇率算（NETONAPI_QUOTA_PER_PRICE_UNIT），
- * 界面不承诺具体数字，只在建单后显示后端算出来的 amountMicro。
+ * 在线充值（主流做法）：页面上只选金额（快捷金额或自定义）→ 点「充值」弹出对话框选支付方式 → 确认后
+ * POST /app/gateway/recharge 建单，按 displayMode 把用户送去付款（跳转 / 二维码 / SDK 参数），对话框里
+ * 轮询 GET /app/gateway/recharge/get/{id} 直到已付。额度由回调入账，到账额度以后端算出的 amountMicro 为准。
  *
  * 在线充值没开通（后端没配汇率）或没有可用支付渠道时，只提示联系客户经理充值，不显示表单。
- * 模拟充值保留给联调（需服务端显式开启 NETONAPI_ENABLE_MOCK_RECHARGE），只在开着时出现，金额按美元填。
+ * 没有「模拟充值」：要给用户加额度由运营在管理台手动充值。
  */
 export default function Page() {
   const describeError = useDescribeError("payment");
   const t = useT("payment");
   const [page, setPage] = React.useState(1);
-  const [amount, setAmount] = React.useState("");
   const [code, setCode] = React.useState("");
   const [redeemed, setRedeemed] = React.useState<RedeemResult | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -101,6 +101,9 @@ export default function Page() {
   // ── 真实充值 ──
   const [channelCode, setChannelCode] = React.useState("");
   const [yuan, setYuan] = React.useState("");
+  /** 支付对话框：null = 关着；choose = 选支付方式；pay = 已建单、等付款结果。 */
+  const [dialog, setDialog] = React.useState<null | "choose" | "pay">(null);
+  const [dialogError, setDialogError] = React.useState<string | null>(null);
   const [ordering, setOrdering] = React.useState(false);
   const [order, setOrder] = React.useState<RechargeOrder | null>(null);
   const [payState, setPayState] = React.useState<"idle" | "waiting" | "paid" | "closed" | "timeout">("idle");
@@ -117,7 +120,7 @@ export default function Page() {
   });
   // 渠道拉不到按「没有可用渠道」处理，不挡流水与兑换
   const channelsQ = useQuery({ queryKey: ["pay-channels"], queryFn: () => apiFetch<PayChannel[]>("/app/pay/channel/list").catch(() => [] as PayChannel[]) });
-  // 在线充值是否开通（后端没配汇率 = 没开通）、汇率、模拟充值开关；拉不到按「没开通、没有模拟充值」处理
+  // 在线充值是否开通（后端没配汇率 = 没开通）、汇率、单笔上下限；拉不到按「没开通」处理
   const optionsQ = useQuery({
     queryKey: ["gateway-recharge-options"],
     queryFn: () => apiFetch<RechargeOptions>("/app/gateway/recharge/options").catch(() => CLOSED_OPTIONS),
@@ -160,28 +163,39 @@ export default function Page() {
     return () => { alive = false; window.clearInterval(timer); };
   }, [order, payState, load]);
 
+  const price = Math.round(Number(yuan) * 100);
+  const priceValid = Number.isFinite(price) && price > 0;
+  /** 单笔上下限（分）；0 = 不限。 */
+  const amountError = !options || yuan.trim() === "" ? null
+    : !priceValid ? t("billing.err.amount_invalid")
+    : options.minPrice > 0 && price < options.minPrice ? t("billing.err.amount_min", { min: fiat(options.minPrice) })
+    : options.maxPrice > 0 && price > options.maxPrice ? t("billing.err.amount_max", { max: fiat(options.maxPrice) })
+    : null;
+  const presets = options ? PRESET_YUAN.filter((y) => (options.minPrice <= 0 || y * 100 >= options.minPrice) && (options.maxPrice <= 0 || y * 100 <= options.maxPrice)) : [];
+
+  function openPay() {
+    setDialogError(null); setOrder(null); setPaidStatus(null); setPayState("idle");
+    if (channels && channels.length > 0 && !channels.some((c) => c.code === channelCode)) setChannelCode(channels[0].code);
+    setDialog("choose");
+  }
+
+  function closeDialog() {
+    // 关掉对话框即停止等待；已付但回调慢的订单稍后会出现在流水里，钱不会丢
+    setDialog(null); setPayState("idle"); setOrder(null);
+    if (payState === "paid") setYuan("");
+  }
+
   async function createOrder() {
-    setError(null); setOrder(null); setPaidStatus(null);
-    const price = Math.round(Number(yuan) * 100);
-    if (!Number.isFinite(price) || price <= 0) { setError(t("billing.err.amount_invalid")); return; }
-    if (!channelCode) { setError(t("billing.err.channel_required")); return; }
+    setDialogError(null); setOrder(null); setPaidStatus(null);
+    if (!priceValid || amountError) { setDialogError(amountError ?? t("billing.err.amount_invalid")); return; }
+    if (!channelCode) { setDialogError(t("billing.err.channel_required")); return; }
     setOrdering(true);
     try {
       const o = await apiWrite<RechargeOrder>("/app/gateway/recharge", "POST", { price, channelCode });
-      setOrder(o); setPayState("waiting");
-      // 跳转类渠道开新窗口付款，本页留着轮询结果；弹窗被拦时下面仍有手动链接兜底。
+      setOrder(o); setPayState("waiting"); setDialog("pay");
+      // 跳转类渠道开新窗口付款，本页留着轮询结果；弹窗被拦时对话框里仍有手动链接兜底。
       if (o.displayMode === "REDIRECT_URL" && o.payload) window.open(o.payload, "_blank", "noopener");
-    } catch (cause) { setError(describeError(cause)); } finally { setOrdering(false); }
-  }
-
-  async function recharge() {
-    setError(null);
-    try {
-      const micro = Math.round(Number(amount) * 1_000_000);  // 输入的是美元，接口要 μUSD
-      if (!Number.isFinite(micro) || micro <= 0) { setError(t("billing.err.amount_invalid")); return; }
-      await apiWrite("/app/gateway/recharge/mock", "POST", { amount: micro });
-      setAmount(""); void load();
-    } catch (cause) { setError(describeError(cause)); }
+    } catch (cause) { setDialogError(describeError(cause)); } finally { setOrdering(false); }
   }
 
   /**
@@ -249,130 +263,143 @@ export default function Page() {
           ) : !options.online || channels.length === 0 ? (
             <p style={{ margin: 0, fontSize: 14 }}>{t("billing.online.contact")}</p>
           ) : (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 12 }}>
-                <Field label={t("billing.online.channel")}>
-                  <select
-                    value={channelCode}
-                    onChange={(e) => setChannelCode(e.target.value)}
-                    disabled={ordering || payState === "waiting"}
-                    style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "inherit" }}
-                  >
-                    {channels.map((c) => <option key={c.code} value={c.code}>{channelLabel(c, t)}</option>)}
-                  </select>
-                </Field>
-                <Field label={t("billing.online.amount")}>
-                  <Input
-                    value={yuan}
-                    onChange={(e) => setYuan(e.target.value)}
-                    placeholder={t("billing.online.amount_placeholder")}
-                    inputMode="decimal"
-                    disabled={ordering || payState === "waiting"}
-                  />
-                </Field>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap gap-2">
+                {presets.map((y) => {
+                  const on = yuan === String(y);
+                  return (
+                    <button key={y} type="button" onClick={() => setYuan(String(y))}
+                      className={`min-w-20 rounded-lg border px-4 py-2.5 text-sm font-semibold tabular-nums transition ${on ? "border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]" : "border-[var(--border)] hover:bg-[var(--muted)]"}`}>
+                      ¥{y}
+                    </button>
+                  );
+                })}
+                <div className="w-40">
+                  <Input value={presets.includes(Number(yuan)) ? "" : yuan} onChange={(e) => setYuan(e.target.value)}
+                    placeholder={t("billing.online.custom_placeholder")} inputMode="decimal" aria-label={t("billing.online.amount")} />
+                </div>
               </div>
-              <p style={muted}>{t("billing.online.hint")}</p>
-              {(() => {
-                const price = Math.round(Number(yuan) * 100);
-                if (!options.quotaPerPriceUnit || !Number.isFinite(price) || price <= 0) return null;
-                return <p style={{ ...muted, color: "var(--foreground)" }}>{t("billing.online.preview", { amount: usd(price * options.quotaPerPriceUnit) })}</p>;
-              })()}
-              <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                <Button onClick={() => void createOrder()} disabled={ordering || payState === "waiting" || yuan.trim() === ""}>
-                  {ordering ? t("billing.online.ordering") : t("billing.online.pay")}
-                </Button>
-                {payState === "waiting" ? (
-                  <Button variant="secondary" onClick={() => { setPayState("idle"); setOrder(null); }}>{t("billing.online.stop_waiting")}</Button>
-                ) : null}
+              {amountError ? <p style={{ ...muted, color: "var(--destructive, #dc2626)" }}>{amountError}</p>
+                : priceValid && options.quotaPerPriceUnit ? <p style={{ ...muted, color: "var(--foreground)" }}>{t("billing.online.preview", { price: fiat(price), amount: usd(price * options.quotaPerPriceUnit) })}</p>
+                : <p style={muted}>{t("billing.online.hint")}</p>}
+              <div>
+                <Button onClick={openPay} disabled={!priceValid || amountError !== null}>{t("billing.online.submit")}</Button>
               </div>
-            </>
-          )}
-
-          {order ? (
-            <div style={{ marginTop: 12, padding: 12, borderRadius: 8, border: "1px solid var(--border)" }}>
-              <p style={{ margin: 0, fontSize: 13 }}>
-                {t("billing.order.summary", { id: order.merchantOrderId, price: fiat(order.price), amount: usd(order.amountMicro) })}
-              </p>
-              {payState === "waiting" ? (
-                <>
-                  {order.displayMode === "REDIRECT_URL" ? (
-                    <p style={muted}>
-                      {t("billing.order.redirect_before")}
-                      <a href={order.payload} target="_blank" rel="noopener noreferrer">{t("billing.order.redirect_link")}</a>
-                      {t("billing.order.redirect_after")}
-                    </p>
-                  ) : order.displayMode === "QR_CODE" ? (
-                    <>
-                      <p style={muted}>{t("billing.order.qr")}</p>
-                      <QrBox text={order.payload} />
-                    </>
-                  ) : (
-                    <>
-                      <p style={muted}>{t("billing.order.sdk")}</p>
-                      <pre style={{ fontSize: 12, overflowX: "auto", margin: 0 }}>{order.payload}</pre>
-                    </>
-                  )}
-                  <p style={muted}>{t("billing.order.waiting")}</p>
-                </>
-              ) : payState === "paid" ? (
-                <p style={{ margin: "6px 0 0", fontSize: 13 }}>
-                  {paidStatus?.paidAt
-                    ? t("billing.order.paid_at", { amount: usd(paidStatus.amountMicro ?? order.amountMicro), time: formatDateTime(paidStatus.paidAt) })
-                    : t("billing.order.paid", { amount: usd(paidStatus?.amountMicro ?? order.amountMicro) })}
-                </p>
-              ) : payState === "closed" ? (
-                <p style={muted}>{t("billing.order.closed")}</p>
-              ) : payState === "timeout" ? (
-                <p style={muted}>{t("billing.order.timeout")}</p>
-              ) : null}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>{t("billing.redeem.title")}</CardTitle></CardHeader>
+        <CardContent>
+          <Field label={t("billing.redeem.code")}>
+            <Input
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder={t("billing.redeem.placeholder")}
+              disabled={busy}
+            />
+          </Field>
+          <p style={muted}>
+            {t("billing.redeem.hint")}
+          </p>
+          <div style={{ marginTop: 8 }}>
+            <Button onClick={() => void redeem()} disabled={busy || code.trim() === ""}>
+              {busy ? t("billing.redeem.redeeming") : t("billing.redeem.submit")}
+            </Button>
+          </div>
+          {redeemed ? (
+            <p style={{ margin: "8px 0 0", fontSize: 13 }}>
+              {t("billing.redeem.done", { amount: usd(redeemed.quotaMicro), balance: usd(redeemed.balance) })}
+            </p>
           ) : null}
         </CardContent>
       </Card>
 
-      {/* 模拟充值只在测试环境（后端开了 NETONAPI_ENABLE_MOCK_RECHARGE）出现；没有它时兑换码占满一行 */}
-      <div style={{ display: "grid", gridTemplateColumns: options?.mock ? "repeat(2, minmax(0,1fr))" : "minmax(0,1fr)", gap: 12 }}>
-        <Card>
-          <CardHeader><CardTitle>{t("billing.redeem.title")}</CardTitle></CardHeader>
-          <CardContent>
-            <Field label={t("billing.redeem.code")}>
-              <Input
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                placeholder={t("billing.redeem.placeholder")}
-                disabled={busy}
-              />
-            </Field>
-            <p style={muted}>
-              {t("billing.redeem.hint")}
-            </p>
-            <div style={{ marginTop: 8 }}>
-              <Button onClick={() => void redeem()} disabled={busy || code.trim() === ""}>
-                {busy ? t("billing.redeem.redeeming") : t("billing.redeem.submit")}
-              </Button>
+      {dialog && channels && options ? (
+        <Portal>
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-[#09090b]/60 px-4 backdrop-blur-sm"
+            onMouseDown={() => { if (dialog === "choose" && !ordering) closeDialog(); }}>
+            <div role="dialog" aria-modal="true" aria-label={t("billing.pay.title")} onMouseDown={(e) => e.stopPropagation()}
+              className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+              <h2 className="text-lg font-bold text-[var(--foreground)]">{dialog === "choose" ? t("billing.pay.title") : t("billing.pay.paying_title")}</h2>
+              <div className="mt-3 flex items-baseline justify-between rounded-lg bg-[var(--muted)] px-4 py-3">
+                <span className="text-sm text-[var(--muted-foreground)]">{t("billing.pay.amount")}</span>
+                <span className="text-2xl font-bold tabular-nums">{fiat(order?.price ?? price)}</span>
+              </div>
+              <p className="mt-1 text-right text-xs text-[var(--muted-foreground)]">
+                {t("billing.pay.credit", { amount: usd(order?.amountMicro ?? (options.quotaPerPriceUnit ? price * options.quotaPerPriceUnit : 0)) })}
+              </p>
+
+              {dialog === "choose" ? (
+                <>
+                  <p className="mt-4 text-sm font-medium">{t("billing.pay.method")}</p>
+                  <div className="mt-2 flex flex-col gap-2">
+                    {channels.map((c) => {
+                      const on = c.code === channelCode;
+                      return (
+                        <label key={c.code} className={`flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-sm transition ${on ? "border-[var(--foreground)] ring-1 ring-[var(--foreground)]" : "border-[var(--border)] hover:bg-[var(--muted)]"}`}>
+                          <input type="radio" name="pay-channel" checked={on} onChange={() => setChannelCode(c.code)} disabled={ordering} />
+                          <span className="font-medium">{channelLabel(c, t)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {dialogError ? <p className="mt-3 text-sm text-red-500">{dialogError}</p> : null}
+                  <div className="mt-6 flex justify-end gap-2">
+                    <Button variant="ghost" onClick={closeDialog} disabled={ordering}>{t("billing.pay.cancel")}</Button>
+                    <Button onClick={() => void createOrder()} disabled={ordering || !channelCode}>{ordering ? t("billing.online.ordering") : t("billing.pay.confirm")}</Button>
+                  </div>
+                </>
+              ) : order ? (
+                <>
+                  <div className="mt-4 text-sm">
+                    {payState === "waiting" ? (
+                      <>
+                        {order.displayMode === "REDIRECT_URL" ? (
+                          <p style={muted}>
+                            {t("billing.order.redirect_before")}
+                            <a href={order.payload} target="_blank" rel="noopener noreferrer">{t("billing.order.redirect_link")}</a>
+                            {t("billing.order.redirect_after")}
+                          </p>
+                        ) : order.displayMode === "QR_CODE" ? (
+                          <>
+                            <p style={muted}>{t("billing.order.qr")}</p>
+                            <QrBox text={order.payload} />
+                          </>
+                        ) : (
+                          <>
+                            <p style={muted}>{t("billing.order.sdk")}</p>
+                            <pre style={{ fontSize: 12, overflowX: "auto", margin: 0 }}>{order.payload}</pre>
+                          </>
+                        )}
+                        <p className="mt-3 text-sm">{t("billing.order.waiting")}</p>
+                      </>
+                    ) : payState === "paid" ? (
+                      <p className="text-sm font-medium text-emerald-500">
+                        {paidStatus?.paidAt
+                          ? t("billing.order.paid_at", { amount: usd(paidStatus.amountMicro ?? order.amountMicro), time: formatDateTime(paidStatus.paidAt) })
+                          : t("billing.order.paid", { amount: usd(paidStatus?.amountMicro ?? order.amountMicro) })}
+                      </p>
+                    ) : payState === "closed" ? (
+                      <p style={muted}>{t("billing.order.closed")}</p>
+                    ) : payState === "timeout" ? (
+                      <p style={muted}>{t("billing.order.timeout")}</p>
+                    ) : null}
+                    <p className="mt-3 text-xs text-[var(--muted-foreground)]">{t("billing.order.no", { id: order.merchantOrderId })}</p>
+                  </div>
+                  <div className="mt-6 flex justify-end gap-2">
+                    {payState === "waiting"
+                      ? <Button variant="ghost" onClick={closeDialog}>{t("billing.pay.close_waiting")}</Button>
+                      : <Button onClick={closeDialog}>{t("billing.pay.done")}</Button>}
+                  </div>
+                </>
+              ) : null}
             </div>
-            {redeemed ? (
-              <p style={{ margin: "8px 0 0", fontSize: 13 }}>
-                {t("billing.redeem.done", { amount: usd(redeemed.quotaMicro), balance: usd(redeemed.balance) })}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-        {options?.mock ? (
-          <Card>
-            <CardHeader><CardTitle>{t("billing.mock.title")}</CardTitle></CardHeader>
-            <CardContent>
-              <Field label={t("billing.mock.amount")}>
-                <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={t("billing.mock.placeholder")} inputMode="decimal" />
-              </Field>
-              <p style={muted}>
-                {t("billing.mock.hint", { grant: t("billing.tx.grant"), recharge: t("billing.tx.recharge") })}
-              </p>
-              <div style={{ marginTop: 8 }}><Button onClick={() => void recharge()} disabled={amount.trim() === ""}>{t("billing.mock.submit")}</Button></div>
-            </CardContent>
-          </Card>
-        ) : null}
-      </div>
+          </div>
+        </Portal>
+      ) : null}
 
       <DataTable columns={columns} rows={rows} loading={loading} rowKey={(r) => r.id} />
       <Pagination
